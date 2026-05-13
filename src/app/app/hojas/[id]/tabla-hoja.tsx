@@ -1,8 +1,12 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition, useRef, useEffect } from "react";
 import Link from "next/link";
-import { aplicaFiltroColumna, aplicaFiltroGlobal } from "@/lib/filtros";
+import {
+  aplicaFiltroColumna,
+  aplicaFiltroGlobal,
+  valoresUnicosColumna,
+} from "@/lib/filtros";
 import { createClient } from "@/lib/supabase/client";
 import type { Hoja, Fila, Seleccion } from "@/lib/types";
 
@@ -14,6 +18,9 @@ type Props = {
   miUsuarioId: string | null;
   miRol: string | null;
 };
+
+const FILA_ALTURA = 34; // px por fila — debe coincidir con padding+contenido
+const OVERSCAN = 10; // filas extra arriba y abajo del viewport
 
 export default function TablaHoja({
   hoja,
@@ -34,7 +41,26 @@ export default function TablaHoja({
   const [enviando, startTransition] = useTransition();
   const [mensaje, setMensaje] = useState<string | null>(null);
 
-  // Mapa de hash_dedupe → selección activa por otro usuario
+  // Dropdown de sugerencias abierto: columna y posición
+  const [popoverCol, setPopoverCol] = useState<string | null>(null);
+
+  // Virtualización: scroll offset y altura de viewport
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(600);
+
+  useEffect(() => {
+    function onResize() {
+      if (scrollRef.current) {
+        setViewportH(scrollRef.current.clientHeight);
+      }
+    }
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Mapa de hash_dedupe → selección activa
   const mapaSelecPorHash = useMemo(() => {
     const m = new Map<string, Seleccion[]>();
     for (const s of selecciones) {
@@ -49,6 +75,7 @@ export default function TablaHoja({
     let res = filas.filter((f) => {
       if (!aplicaFiltroGlobal(filtroGlobal, f.datos)) return false;
       for (const [col, val] of Object.entries(filtrosCol)) {
+        if (!val) continue;
         if (!aplicaFiltroColumna(val, f.datos[col])) return false;
       }
       return true;
@@ -64,6 +91,16 @@ export default function TablaHoja({
     }
     return res;
   }, [filas, filtroGlobal, filtrosCol, ordenCol, ordenDir]);
+
+  // Rango virtualizado
+  const totalH = filasFiltradas.length * FILA_ALTURA;
+  const startIdx = Math.max(0, Math.floor(scrollTop / FILA_ALTURA) - OVERSCAN);
+  const endIdx = Math.min(
+    filasFiltradas.length,
+    Math.ceil((scrollTop + viewportH) / FILA_ALTURA) + OVERSCAN
+  );
+  const filasVisibles = filasFiltradas.slice(startIdx, endIdx);
+  const offsetY = startIdx * FILA_ALTURA;
 
   function toggleFila(id: string) {
     setSeleccionadas((prev) => {
@@ -170,7 +207,7 @@ export default function TablaHoja({
         <div className="flex items-center gap-2 mb-2">
           <input
             type="text"
-            placeholder='Búsqueda global (ej. "carro 4x4" amarillo)'
+            placeholder='Búsqueda global · "frase exacta" busca textual'
             value={filtroGlobal}
             onChange={(e) => setFiltroGlobal(e.target.value)}
             className="flex-1"
@@ -186,13 +223,18 @@ export default function TablaHoja({
           </button>
         </div>
         <p className="muted text-xs">
-          Filtros: texto = todas las palabras (AND), <code>{`"frase exacta"`}</code>, números = <code>{`>100`}</code>, <code>{`<=50`}</code>, <code>{`<>0`}</code>
+          Por columna: <code>104000 105000</code> trae ambos (OR) · <code>(vacio)</code> filtra vacíos · <code>{`"frase exacta"`}</code> · <code>{`>100`}</code> · <code>{`100-500`}</code> rango · Click en ▾ para elegir valores
         </p>
       </div>
 
-      <div className="card overflow-auto" style={{ maxHeight: "calc(100vh - 260px)" }}>
-        <table className="w-full text-xs border-collapse">
-          <thead className="sticky top-0 bg-[rgb(var(--bg-alt))] z-10">
+      <div
+        ref={scrollRef}
+        onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
+        className="card overflow-auto relative"
+        style={{ height: "calc(100vh - 260px)" }}
+      >
+        <table className="w-full text-xs border-collapse" style={{ tableLayout: "auto" }}>
+          <thead className="sticky top-0 bg-[rgb(var(--bg-alt))] z-20">
             <tr>
               {puedeSeleccionar && (
                 <th className="p-2 border-b border-[rgb(var(--border))]" style={{ width: 32 }}>
@@ -229,87 +271,255 @@ export default function TablaHoja({
               {puedeSeleccionar && <th className="p-1 border-b border-[rgb(var(--border))]" />}
               <th className="p-1 border-b border-[rgb(var(--border))]" />
               {columnas.map((c) => (
-                <th key={`f-${c}`} className="p-1 border-b border-[rgb(var(--border))]">
-                  <input
-                    type="text"
-                    value={filtrosCol[c] ?? ""}
-                    onChange={(e) =>
-                      setFiltrosCol((prev) => ({ ...prev, [c]: e.target.value }))
-                    }
-                    placeholder="filtrar…"
-                    className="w-full text-xs"
-                    style={{ padding: "3px 6px" }}
-                  />
+                <th key={`f-${c}`} className="p-1 border-b border-[rgb(var(--border))] relative">
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      value={filtrosCol[c] ?? ""}
+                      onChange={(e) =>
+                        setFiltrosCol((prev) => ({ ...prev, [c]: e.target.value }))
+                      }
+                      placeholder="filtrar…"
+                      className="flex-1 text-xs"
+                      style={{ padding: "3px 6px", minWidth: 60 }}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPopoverCol(popoverCol === c ? null : c);
+                      }}
+                      className="text-xs px-1 hover:bg-[rgb(var(--bg))] rounded"
+                      title="Ver valores únicos"
+                      style={{ lineHeight: 1 }}
+                    >
+                      ▾
+                    </button>
+                  </div>
+                  {popoverCol === c && (
+                    <PopoverValores
+                      filas={filas}
+                      columna={c}
+                      filtroActual={filtrosCol[c] ?? ""}
+                      onAplicar={(nuevo) => {
+                        setFiltrosCol((prev) => ({ ...prev, [c]: nuevo }));
+                        setPopoverCol(null);
+                      }}
+                      onCerrar={() => setPopoverCol(null)}
+                    />
+                  )}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody>
-            {filasFiltradas.slice(0, 1000).map((f) => {
-              const selecExist = mapaSelecPorHash.get(f.hash_dedupe) ?? [];
-              const selecPropia = selecExist.find((s) => s.usuario_id === miUsuarioId);
-              const selecAjena = selecExist.find((s) => s.usuario_id !== miUsuarioId);
-              const tomada = selecPropia || selecAjena;
-              const marcada = seleccionadas.has(f.id);
-
-              return (
-                <tr
-                  key={f.id}
-                  className={
-                    marcada
-                      ? "bg-blue-50 dark:bg-blue-950/30"
-                      : selecPropia
-                      ? "bg-green-50 dark:bg-green-950/20"
-                      : selecAjena
-                      ? "bg-amber-50 dark:bg-amber-950/20"
-                      : ""
-                  }
-                >
-                  {puedeSeleccionar && (
-                    <td className="p-2 border-b border-[rgb(var(--border))]">
-                      <input
-                        type="checkbox"
-                        checked={marcada}
-                        onChange={() => toggleFila(f.id)}
-                        disabled={!!tomada}
-                      />
-                    </td>
-                  )}
-                  <td className="p-2 border-b border-[rgb(var(--border))] text-xs">
-                    {tomada ? (
-                      <div>
-                        <div className="font-medium">
-                          {selecPropia ? "Tú · " : ""}
-                          {tomada.estado.replace("_", " ")}
-                        </div>
-                        {selecAjena && (
-                          <div className="muted text-[10px]">
-                            {mapaUsuarios[selecAjena.usuario_id] ?? "Otro usuario"}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="muted">disponible</span>
-                    )}
-                  </td>
-                  {columnas.map((c) => (
-                    <td
-                      key={c}
-                      className="p-2 border-b border-[rgb(var(--border))] whitespace-nowrap"
-                    >
-                      {String(f.datos[c] ?? "")}
-                    </td>
-                  ))}
-                </tr>
-              );
-            })}
-          </tbody>
         </table>
-        {filasFiltradas.length > 1000 && (
-          <div className="p-3 text-xs muted text-center border-t border-[rgb(var(--border))]">
-            Mostrando primeras 1,000 filas. Refina los filtros para ver el resto.
-          </div>
+
+        {/* Cuerpo virtualizado */}
+        <div style={{ height: totalH, position: "relative" }}>
+          <table
+            className="w-full text-xs border-collapse"
+            style={{
+              tableLayout: "auto",
+              position: "absolute",
+              top: offsetY,
+              left: 0,
+              right: 0,
+            }}
+          >
+            <tbody>
+              {filasVisibles.map((f) => {
+                const selecExist = mapaSelecPorHash.get(f.hash_dedupe) ?? [];
+                const selecPropia = selecExist.find((s) => s.usuario_id === miUsuarioId);
+                const selecAjena = selecExist.find((s) => s.usuario_id !== miUsuarioId);
+                const tomada = selecPropia || selecAjena;
+                const marcada = seleccionadas.has(f.id);
+
+                return (
+                  <tr
+                    key={f.id}
+                    style={{ height: FILA_ALTURA }}
+                    className={
+                      marcada
+                        ? "bg-blue-50 dark:bg-blue-950/30"
+                        : selecPropia
+                        ? "bg-green-50 dark:bg-green-950/20"
+                        : selecAjena
+                        ? "bg-amber-50 dark:bg-amber-950/20"
+                        : ""
+                    }
+                  >
+                    {puedeSeleccionar && (
+                      <td className="p-2 border-b border-[rgb(var(--border))]" style={{ width: 32 }}>
+                        <input
+                          type="checkbox"
+                          checked={marcada}
+                          onChange={() => toggleFila(f.id)}
+                          disabled={!!tomada}
+                        />
+                      </td>
+                    )}
+                    <td className="p-2 border-b border-[rgb(var(--border))] text-xs" style={{ width: 130 }}>
+                      {tomada ? (
+                        <div>
+                          <div className="font-medium">
+                            {selecPropia ? "Tú · " : ""}
+                            {tomada.estado.replace("_", " ")}
+                          </div>
+                          {selecAjena && (
+                            <div className="muted text-[10px]">
+                              {mapaUsuarios[selecAjena.usuario_id] ?? "Otro usuario"}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="muted">disponible</span>
+                      )}
+                    </td>
+                    {columnas.map((c) => (
+                      <td
+                        key={c}
+                        className="p-2 border-b border-[rgb(var(--border))] whitespace-nowrap"
+                      >
+                        {String(f.datos[c] ?? "")}
+                      </td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Popover con valores únicos de una columna y multi-selección estilo Excel */
+function PopoverValores({
+  filas,
+  columna,
+  filtroActual,
+  onAplicar,
+  onCerrar,
+}: {
+  filas: Fila[];
+  columna: string;
+  filtroActual: string;
+  onAplicar: (nuevo: string) => void;
+  onCerrar: () => void;
+}) {
+  const [busqueda, setBusqueda] = useState("");
+  const valores = useMemo(
+    () => valoresUnicosColumna(filas, columna, 1000),
+    [filas, columna]
+  );
+
+  const valoresFiltrados = useMemo(() => {
+    if (!busqueda.trim()) return valores;
+    const q = busqueda.toLowerCase();
+    return valores.filter((v) => v.etiqueta.toLowerCase().includes(q));
+  }, [valores, busqueda]);
+
+  // Parse selección actual desde el filtro
+  const seleccionInicial = useMemo(() => {
+    const set = new Set<string>();
+    const regex = /"[^"]*"|\S+/g;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(filtroActual)) !== null) {
+      const t = m[0].replace(/^"|"$/g, "");
+      set.add(t);
+    }
+    return set;
+  }, [filtroActual]);
+
+  const [seleccion, setSeleccion] = useState<Set<string>>(seleccionInicial);
+
+  function toggle(v: string) {
+    setSeleccion((prev) => {
+      const n = new Set(prev);
+      if (n.has(v)) n.delete(v);
+      else n.add(v);
+      return n;
+    });
+  }
+
+  function aplicar() {
+    if (seleccion.size === 0) {
+      onAplicar("");
+      return;
+    }
+    const term = Array.from(seleccion)
+      .map((v) => {
+        if (v === "(vacio)") return v;
+        // Si contiene espacios, envolver en comillas
+        if (/\s/.test(v)) return `"${v}"`;
+        return v;
+      })
+      .join(" ");
+    onAplicar(term);
+  }
+
+  return (
+    <div
+      className="absolute right-0 top-full mt-1 z-50 card shadow-lg"
+      style={{ width: 260, maxHeight: 340, display: "flex", flexDirection: "column" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="p-2 border-b border-[rgb(var(--border))]">
+        <input
+          type="text"
+          placeholder="Buscar valor…"
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          className="w-full text-xs"
+          autoFocus
+        />
+      </div>
+      <div className="overflow-auto flex-1" style={{ maxHeight: 220 }}>
+        {valoresFiltrados.length === 0 && (
+          <p className="muted text-xs p-3 text-center">Sin valores</p>
         )}
+        {valoresFiltrados.map((v) => (
+          <label
+            key={v.valor}
+            className="flex items-center gap-2 px-2 py-1 text-xs hover:bg-[rgb(var(--bg-alt))] cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              checked={seleccion.has(v.valor)}
+              onChange={() => toggle(v.valor)}
+            />
+            <span
+              className={v.esVacio ? "italic muted" : ""}
+              style={{
+                flex: 1,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {v.etiqueta}
+            </span>
+            <span className="muted text-[10px]">{v.conteo}</span>
+          </label>
+        ))}
+      </div>
+      <div className="p-2 border-t border-[rgb(var(--border))] flex justify-between gap-2">
+        <button
+          onClick={() => {
+            setSeleccion(new Set());
+            onAplicar("");
+          }}
+          className="btn btn-ghost text-xs"
+        >
+          Limpiar
+        </button>
+        <div className="flex gap-1">
+          <button onClick={onCerrar} className="btn btn-ghost text-xs">Cancelar</button>
+          <button onClick={aplicar} className="btn btn-primary text-xs">
+            Aplicar ({seleccion.size})
+          </button>
+        </div>
       </div>
     </div>
   );
