@@ -1,5 +1,4 @@
 "use client";
-//Prueba
 
 import { useMemo, useState, useTransition, useRef, useEffect } from "react";
 import Link from "next/link";
@@ -13,7 +12,7 @@ import type { Hoja, Fila, Seleccion } from "@/lib/types";
 
 type Props = {
   hoja: Hoja;
-  filas: Fila[];
+  totalFilas: number;
   selecciones: Seleccion[];
   mapaUsuarios: Record<string, string>;
   miUsuarioId: string | null;
@@ -22,10 +21,38 @@ type Props = {
 
 const FILA_ALTURA = 32;
 const OVERSCAN = 10;
+const LOTE = 2000; // Cuántas filas trae cada request al servidor
+
+// Ancho default por columna (px). Se ajusta dinámicamente según contenido.
+const ANCHO_MIN = 80;
+const ANCHO_MAX = 280;
+const ANCHO_CHECKBOX = 36;
+const ANCHO_ESTADO = 130;
+
+/** Calcula ancho aproximado de una columna según su contenido (muestreo) */
+function calcularAnchoColumna(
+  col: string,
+  filas: Fila[],
+  muestraTam = 200
+): number {
+  // Ancho del header
+  const headerLen = col.length;
+  // Muestrear hasta N filas para no recorrer todas
+  const paso = Math.max(1, Math.floor(filas.length / muestraTam));
+  let maxLen = headerLen;
+  for (let i = 0; i < filas.length; i += paso) {
+    const v = filas[i].datos[col];
+    const len = String(v ?? "").length;
+    if (len > maxLen) maxLen = len;
+  }
+  // ~7px por caracter + padding
+  const aprox = maxLen * 7 + 20;
+  return Math.min(ANCHO_MAX, Math.max(ANCHO_MIN, aprox));
+}
 
 export default function TablaHoja({
   hoja,
-  filas,
+  totalFilas,
   selecciones,
   mapaUsuarios,
   miUsuarioId,
@@ -33,8 +60,88 @@ export default function TablaHoja({
 }: Props) {
   const columnas = hoja.columnas ?? [];
 
+  const [filas, setFilas] = useState<Fila[]>([]);
+  const [cargando, setCargando] = useState(true);
+  const [cargadas, setCargadas] = useState(0);
+  const [errorCarga, setErrorCarga] = useState<string | null>(null);
+
+  // === CARGA PROGRESIVA + CACHE ===
+  useEffect(() => {
+    let cancelado = false;
+    const cacheKey = `hoja_${hoja.id}_v${hoja.snapshot_version}`;
+
+    async function cargar() {
+      // Intentar cache
+      try {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached) as { filas: Fila[]; timestamp: number };
+          // Cache válido si tiene menos de 1 hora
+          if (Date.now() - parsed.timestamp < 60 * 60 * 1000) {
+            setFilas(parsed.filas);
+            setCargadas(parsed.filas.length);
+            setCargando(false);
+            return;
+          }
+        }
+      } catch {
+        // sessionStorage puede fallar en algunos contextos
+      }
+
+      // Cargar progresivamente
+      let desde = 0;
+      const acumulado: Fila[] = [];
+
+      while (!cancelado) {
+        try {
+          const res = await fetch(`/api/hojas/${hoja.id}/filas?desde=${desde}&tamano=${LOTE}`);
+          if (!res.ok) {
+            setErrorCarga(`Error ${res.status}`);
+            break;
+          }
+          const json = await res.json();
+          if (cancelado) return;
+
+          const nuevas = json.filas as Fila[];
+          acumulado.push(...nuevas);
+
+          // Mostrar al usuario lo que tenemos hasta ahora
+          setFilas([...acumulado]);
+          setCargadas(acumulado.length);
+
+          if (json.completo || nuevas.length === 0) break;
+          desde += LOTE;
+
+          // Tope de seguridad
+          if (acumulado.length >= 100000) break;
+        } catch (e: any) {
+          if (!cancelado) setErrorCarga(e.message || "Error de red");
+          break;
+        }
+      }
+
+      if (!cancelado) {
+        setCargando(false);
+        // Guardar en cache
+        try {
+          sessionStorage.setItem(
+            cacheKey,
+            JSON.stringify({ filas: acumulado, timestamp: Date.now() })
+          );
+        } catch {
+          // Cache lleno, no es crítico
+        }
+      }
+    }
+
+    cargar();
+    return () => {
+      cancelado = true;
+    };
+  }, [hoja.id, hoja.snapshot_version]);
+
+  // === ESTADO DE FILTROS Y UI ===
   const [filtroGlobal, setFiltroGlobal] = useState("");
-  // Lista ordenada de columnas con filtro activo + su valor
   const [filtrosActivos, setFiltrosActivos] = useState<{ col: string; val: string }[]>([]);
   const [ordenCol, setOrdenCol] = useState<string | null>(null);
   const [ordenDir, setOrdenDir] = useState<"asc" | "desc">("asc");
@@ -45,7 +152,7 @@ export default function TablaHoja({
   const [mostrarSelector, setMostrarSelector] = useState(false);
   const [popoverCol, setPopoverCol] = useState<string | null>(null);
 
-  // Virtualización
+  // === VIRTUALIZACIÓN ===
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
@@ -59,6 +166,16 @@ export default function TablaHoja({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // === ANCHOS DE COLUMNA (calculados una vez cuando llegan suficientes filas) ===
+  const anchosCol = useMemo(() => {
+    const mapa: Record<string, number> = {};
+    for (const c of columnas) {
+      mapa[c] = calcularAnchoColumna(c, filas);
+    }
+    return mapa;
+  }, [columnas, filas.length > 0 ? filas[0]?.id : null]); // solo recalcula cuando hay datos
+
+  // === SELECCIONES POR HASH ===
   const mapaSelecPorHash = useMemo(() => {
     const m = new Map<string, Seleccion[]>();
     for (const s of selecciones) {
@@ -69,6 +186,7 @@ export default function TablaHoja({
     return m;
   }, [selecciones]);
 
+  // === FILTRADO ===
   const filasFiltradas = useMemo(() => {
     let res = filas.filter((f) => {
       if (!aplicaFiltroGlobal(filtroGlobal, f.datos)) return false;
@@ -90,7 +208,6 @@ export default function TablaHoja({
     return res;
   }, [filas, filtroGlobal, filtrosActivos, ordenCol, ordenDir]);
 
-  // Virtualización
   const totalH = filasFiltradas.length * FILA_ALTURA;
   const startIdx = Math.max(0, Math.floor(scrollTop / FILA_ALTURA) - OVERSCAN);
   const endIdx = Math.min(
@@ -143,8 +260,7 @@ export default function TablaHoja({
   }
 
   async function confirmarSeleccion() {
-    if (seleccionadas.size === 0) return;
-    if (!miUsuarioId) return;
+    if (seleccionadas.size === 0 || !miUsuarioId) return;
     const filasSel = filas.filter((f) => seleccionadas.has(f.id));
     const supabase = createClient();
     startTransition(async () => {
@@ -163,6 +279,10 @@ export default function TablaHoja({
         setMensaje(`${rows.length} fila(s) confirmadas.`);
         setSeleccionadas(new Set());
         setComentario("");
+        // Invalidar cache para que se vea actualizado
+        try {
+          sessionStorage.removeItem(`hoja_${hoja.id}_v${hoja.snapshot_version}`);
+        } catch {}
         setTimeout(() => location.reload(), 1200);
       }
     });
@@ -177,6 +297,12 @@ export default function TablaHoja({
     (c) => !filtrosActivos.some((f) => f.col === c)
   );
 
+  // Calcula ancho total para que la tabla mantenga estructura
+  const anchoTotal =
+    (puedeSeleccionar ? ANCHO_CHECKBOX : 0) +
+    ANCHO_ESTADO +
+    columnas.reduce((s, c) => s + (anchosCol[c] ?? ANCHO_MIN), 0);
+
   return (
     <div>
       <div className="mb-3 flex items-start justify-between gap-4 flex-wrap">
@@ -184,11 +310,21 @@ export default function TablaHoja({
           <Link href="/app" className="muted text-xs hover:underline">← Hojas</Link>
           <h1 className="text-lg font-semibold mt-1">{hoja.nombre}</h1>
           <p className="muted text-xs mt-1">
-            {filasFiltradas.length.toLocaleString()} de {filas.length.toLocaleString()} filas · v{hoja.snapshot_version}
+            {cargando ? (
+              <>
+                Cargando {cargadas.toLocaleString()} de {totalFilas.toLocaleString()}…
+              </>
+            ) : (
+              <>
+                {filasFiltradas.length.toLocaleString()} de {filas.length.toLocaleString()} filas · v{hoja.snapshot_version}
+              </>
+            )}
           </p>
         </div>
         <div className="flex gap-2 items-center">
-          <button onClick={exportarExcel} className="btn text-xs">Exportar filtrado</button>
+          <button onClick={exportarExcel} className="btn text-xs" disabled={filasFiltradas.length === 0}>
+            Exportar filtrado
+          </button>
           {puedeSeleccionar && seleccionadas.size > 0 && (
             <>
               <input
@@ -211,16 +347,19 @@ export default function TablaHoja({
         </div>
       </div>
 
+      {errorCarga && (
+        <div className="mb-3 text-xs px-3 py-2 bg-red-50 border border-red-200 text-red-700 rounded">
+          Error al cargar filas: {errorCarga}
+        </div>
+      )}
       {mensaje && (
         <div className="mb-3 text-xs px-3 py-2 bg-[rgb(var(--bg-alt))] border border-[rgb(var(--border))] rounded">
           {mensaje}
         </div>
       )}
 
-      {/* Layout: panel lateral + tabla */}
       <div className="grid gap-3" style={{ gridTemplateColumns: "240px 1fr" }}>
-
-        {/* Panel lateral de filtros */}
+        {/* PANEL LATERAL */}
         <aside className="card p-3" style={{ height: "calc(100vh - 200px)", overflowY: "auto" }}>
           <p className="text-[10px] uppercase tracking-wide muted mb-2 font-medium">
             Búsqueda global
@@ -298,7 +437,6 @@ export default function TablaHoja({
             </div>
           ))}
 
-          {/* Selector para agregar nueva columna */}
           {mostrarSelector ? (
             <div className="border border-[rgb(var(--border))] rounded p-2 bg-[rgb(var(--bg-alt))]">
               <p className="text-[10px] muted mb-1">Elige columna:</p>
@@ -344,131 +482,190 @@ export default function TablaHoja({
           </div>
         </aside>
 
-        {/* Tabla */}
+        {/* TABLA */}
         <div
           ref={scrollRef}
           onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
-          className="card overflow-auto"
-          style={{ height: "calc(100vh - 200px)", position: "relative" }}
+          className="card overflow-auto relative"
+          style={{ height: "calc(100vh - 200px)" }}
         >
-          <div style={{ height: totalH, position: "relative", minWidth: "fit-content" }}>
-            <table
-              className="text-xs border-collapse"
-              style={{ tableLayout: "auto", width: "max-content", minWidth: "100%" }}
-            >
-              <thead
+          {filas.length === 0 && cargando && (
+            <div className="p-8 text-center muted text-xs">
+              Cargando primer lote de datos…
+            </div>
+          )}
+
+          {filas.length > 0 && (
+            <div style={{ width: anchoTotal, position: "relative" }}>
+              {/* HEADER STICKY */}
+              <div
                 style={{
                   position: "sticky",
                   top: 0,
                   zIndex: 10,
                   background: "rgb(var(--bg-alt))",
+                  display: "flex",
+                  borderBottom: "1px solid rgb(var(--border))",
+                  height: FILA_ALTURA,
+                  width: anchoTotal,
                 }}
               >
-                <tr>
-                  {puedeSeleccionar && (
-                    <th
-                      className="p-2 border-b border-[rgb(var(--border))]"
-                      style={{ width: 32, position: "sticky", left: 0, background: "rgb(var(--bg-alt))", zIndex: 11 }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={
-                          filasFiltradas.length > 0 &&
-                          filasFiltradas.every((f) => seleccionadas.has(f.id))
-                        }
-                        onChange={(e) => {
-                          if (e.target.checked) setSeleccionadas(new Set(filasFiltradas.map((f) => f.id)));
-                          else setSeleccionadas(new Set());
-                        }}
-                      />
-                    </th>
-                  )}
-                  <th
-                    className="p-2 text-left border-b border-[rgb(var(--border))] font-medium whitespace-nowrap"
-                    style={{ width: 140 }}
+                {puedeSeleccionar && (
+                  <div
+                    style={{
+                      width: ANCHO_CHECKBOX,
+                      flexShrink: 0,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      borderRight: "0.5px solid rgb(var(--border))",
+                    }}
                   >
-                    Estado
-                  </th>
-                  {columnas.map((c) => (
-                    <th
-                      key={c}
-                      onClick={() => toggleOrden(c)}
-                      className="p-2 text-left border-b border-[rgb(var(--border))] font-medium cursor-pointer hover:bg-[rgb(var(--bg))] whitespace-nowrap select-none"
-                    >
-                      {c} {ordenCol === c && (ordenDir === "asc" ? "↑" : "↓")}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody style={{ position: "absolute", top: offsetY, left: 0, right: 0 }}>
-                {filasVisibles.map((f) => {
-                  const selecExist = mapaSelecPorHash.get(f.hash_dedupe) ?? [];
-                  const selecPropia = selecExist.find((s) => s.usuario_id === miUsuarioId);
-                  const selecAjena = selecExist.find((s) => s.usuario_id !== miUsuarioId);
-                  const tomada = selecPropia || selecAjena;
-                  const marcada = seleccionadas.has(f.id);
-
-                  return (
-                    <tr
-                      key={f.id}
-                      style={{ height: FILA_ALTURA }}
-                      className={
-                        marcada
-                          ? "bg-blue-50 dark:bg-blue-950/30"
-                          : selecPropia
-                          ? "bg-green-50 dark:bg-green-950/20"
-                          : selecAjena
-                          ? "bg-amber-50 dark:bg-amber-950/20"
-                          : ""
+                    <input
+                      type="checkbox"
+                      checked={
+                        filasFiltradas.length > 0 &&
+                        filasFiltradas.every((f) => seleccionadas.has(f.id))
                       }
-                    >
-                      {puedeSeleccionar && (
-                        <td
-                          className="p-2 border-b border-[rgb(var(--border))]"
-                          style={{ width: 32 }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={marcada}
-                            onChange={() => toggleFila(f.id)}
-                            disabled={!!tomada}
-                          />
-                        </td>
-                      )}
-                      <td
-                        className="p-2 border-b border-[rgb(var(--border))] text-xs"
-                        style={{ width: 140 }}
+                      onChange={(e) => {
+                        if (e.target.checked) setSeleccionadas(new Set(filasFiltradas.map((f) => f.id)));
+                        else setSeleccionadas(new Set());
+                      }}
+                    />
+                  </div>
+                )}
+                <div
+                  style={{
+                    width: ANCHO_ESTADO,
+                    flexShrink: 0,
+                    padding: "8px",
+                    fontWeight: 500,
+                    fontSize: 12,
+                    borderRight: "0.5px solid rgb(var(--border))",
+                  }}
+                >
+                  Estado
+                </div>
+                {columnas.map((c) => (
+                  <div
+                    key={c}
+                    onClick={() => toggleOrden(c)}
+                    style={{
+                      width: anchosCol[c] ?? ANCHO_MIN,
+                      flexShrink: 0,
+                      padding: "8px",
+                      fontWeight: 500,
+                      fontSize: 12,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      borderRight: "0.5px solid rgb(var(--border))",
+                      userSelect: "none",
+                    }}
+                    title={c}
+                  >
+                    {c} {ordenCol === c && (ordenDir === "asc" ? "↑" : "↓")}
+                  </div>
+                ))}
+              </div>
+
+              {/* CUERPO virtualizado */}
+              <div style={{ height: totalH, position: "relative" }}>
+                <div style={{ position: "absolute", top: offsetY, left: 0, width: anchoTotal }}>
+                  {filasVisibles.map((f) => {
+                    const selecExist = mapaSelecPorHash.get(f.hash_dedupe) ?? [];
+                    const selecPropia = selecExist.find((s) => s.usuario_id === miUsuarioId);
+                    const selecAjena = selecExist.find((s) => s.usuario_id !== miUsuarioId);
+                    const tomada = selecPropia || selecAjena;
+                    const marcada = seleccionadas.has(f.id);
+
+                    const bg = marcada
+                      ? "rgba(59,130,246,0.12)"
+                      : selecPropia
+                      ? "rgba(34,197,94,0.10)"
+                      : selecAjena
+                      ? "rgba(245,158,11,0.10)"
+                      : "transparent";
+
+                    return (
+                      <div
+                        key={f.id}
+                        style={{
+                          display: "flex",
+                          height: FILA_ALTURA,
+                          background: bg,
+                          borderBottom: "0.5px solid rgb(var(--border))",
+                          width: anchoTotal,
+                        }}
                       >
-                        {tomada ? (
-                          <div>
-                            <div className="font-medium">
-                              {selecPropia ? "Tú · " : ""}
-                              {tomada.estado.replace("_", " ")}
-                            </div>
-                            {selecAjena && (
-                              <div className="muted text-[10px]">
-                                {mapaUsuarios[selecAjena.usuario_id] ?? "Otro usuario"}
-                              </div>
-                            )}
+                        {puedeSeleccionar && (
+                          <div
+                            style={{
+                              width: ANCHO_CHECKBOX,
+                              flexShrink: 0,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={marcada}
+                              onChange={() => toggleFila(f.id)}
+                              disabled={!!tomada}
+                            />
                           </div>
-                        ) : (
-                          <span className="muted">disponible</span>
                         )}
-                      </td>
-                      {columnas.map((c) => (
-                        <td
-                          key={c}
-                          className="p-2 border-b border-[rgb(var(--border))] whitespace-nowrap"
+                        <div
+                          style={{
+                            width: ANCHO_ESTADO,
+                            flexShrink: 0,
+                            padding: "6px 8px",
+                            fontSize: 11,
+                            overflow: "hidden",
+                          }}
                         >
-                          {String(f.datos[c] ?? "")}
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                          {tomada ? (
+                            <div>
+                              <div style={{ fontWeight: 500, fontSize: 11 }}>
+                                {selecPropia ? "Tú · " : ""}
+                                {tomada.estado.replace("_", " ")}
+                              </div>
+                              {selecAjena && (
+                                <div className="muted" style={{ fontSize: 10 }}>
+                                  {mapaUsuarios[selecAjena.usuario_id] ?? "Otro"}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="muted">disponible</span>
+                          )}
+                        </div>
+                        {columnas.map((c) => (
+                          <div
+                            key={c}
+                            style={{
+                              width: anchosCol[c] ?? ANCHO_MIN,
+                              flexShrink: 0,
+                              padding: "6px 8px",
+                              fontSize: 11,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                            title={String(f.datos[c] ?? "")}
+                          >
+                            {String(f.datos[c] ?? "")}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
