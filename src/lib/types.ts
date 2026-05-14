@@ -25,6 +25,13 @@ export type MapeoConfig = {
   claves_dedupe?: string[];
 };
 
+export type ModoVisualizacion = "ver_todo" | "buscar_para_ver";
+
+export type FiltroPorFila = {
+  columna: string;
+  aplicar_a: RolUsuario[];
+};
+
 export type Hoja = {
   id: string;
   nombre: string;
@@ -35,6 +42,10 @@ export type Hoja = {
   activa: boolean;
   subida_en: string;
   snapshot_version: number;
+  modo_visualizacion: ModoVisualizacion;
+  roles_visibles: RolUsuario[];
+  columnas_por_rol: Record<string, RolUsuario[]>;
+  filtros_por_fila: FiltroPorFila[];
 };
 
 export type Fila = {

@@ -1,12 +1,7 @@
 "use client";
 
-import { useMemo, useState, useTransition, useRef, useEffect } from "react";
+import { useMemo, useState, useTransition, useRef, useEffect, useCallback } from "react";
 import Link from "next/link";
-import {
-  aplicaFiltroColumna,
-  aplicaFiltroGlobal,
-  valoresUnicosColumna,
-} from "@/lib/filtros";
 import { createClient } from "@/lib/supabase/client";
 import type { Hoja, Fila, Seleccion } from "@/lib/types";
 
@@ -21,23 +16,14 @@ type Props = {
 
 const FILA_ALTURA = 32;
 const OVERSCAN = 10;
-const LOTE = 2000; // Cuántas filas trae cada request al servidor
-
-// Ancho default por columna (px). Se ajusta dinámicamente según contenido.
+const TAMANO_PAGINA = 2000;
 const ANCHO_MIN = 80;
 const ANCHO_MAX = 280;
 const ANCHO_CHECKBOX = 36;
 const ANCHO_ESTADO = 130;
 
-/** Calcula ancho aproximado de una columna según su contenido (muestreo) */
-function calcularAnchoColumna(
-  col: string,
-  filas: Fila[],
-  muestraTam = 200
-): number {
-  // Ancho del header
+function calcularAnchoColumna(col: string, filas: Fila[], muestraTam = 200): number {
   const headerLen = col.length;
-  // Muestrear hasta N filas para no recorrer todas
   const paso = Math.max(1, Math.floor(filas.length / muestraTam));
   let maxLen = headerLen;
   for (let i = 0; i < filas.length; i += paso) {
@@ -45,9 +31,7 @@ function calcularAnchoColumna(
     const len = String(v ?? "").length;
     if (len > maxLen) maxLen = len;
   }
-  // ~7px por caracter + padding
-  const aprox = maxLen * 7 + 20;
-  return Math.min(ANCHO_MAX, Math.max(ANCHO_MIN, aprox));
+  return Math.min(ANCHO_MAX, Math.max(ANCHO_MIN, maxLen * 7 + 20));
 }
 
 export default function TablaHoja({
@@ -58,89 +42,13 @@ export default function TablaHoja({
   miUsuarioId,
   miRol,
 }: Props) {
-  const columnas = hoja.columnas ?? [];
-
   const [filas, setFilas] = useState<Fila[]>([]);
-  const [cargando, setCargando] = useState(true);
-  const [cargadas, setCargadas] = useState(0);
+  const [columnasVisibles, setColumnasVisibles] = useState<string[]>(hoja.columnas);
+  const [cargando, setCargando] = useState(false);
+  const [totalFiltrado, setTotalFiltrado] = useState(0);
+  const [requireFiltro, setRequireFiltro] = useState(hoja.modo_visualizacion === "buscar_para_ver");
   const [errorCarga, setErrorCarga] = useState<string | null>(null);
 
-  // === CARGA PROGRESIVA + CACHE ===
-  useEffect(() => {
-    let cancelado = false;
-    const cacheKey = `hoja_${hoja.id}_v${hoja.snapshot_version}`;
-
-    async function cargar() {
-      // Intentar cache
-      try {
-        const cached = sessionStorage.getItem(cacheKey);
-        if (cached) {
-          const parsed = JSON.parse(cached) as { filas: Fila[]; timestamp: number };
-          // Cache válido si tiene menos de 1 hora
-          if (Date.now() - parsed.timestamp < 60 * 60 * 1000) {
-            setFilas(parsed.filas);
-            setCargadas(parsed.filas.length);
-            setCargando(false);
-            return;
-          }
-        }
-      } catch {
-        // sessionStorage puede fallar en algunos contextos
-      }
-
-      // Cargar progresivamente
-      let desde = 0;
-      const acumulado: Fila[] = [];
-
-      while (!cancelado) {
-        try {
-          const res = await fetch(`/api/hojas/${hoja.id}/filas?desde=${desde}&tamano=${LOTE}`);
-          if (!res.ok) {
-            setErrorCarga(`Error ${res.status}`);
-            break;
-          }
-          const json = await res.json();
-          if (cancelado) return;
-
-          const nuevas = json.filas as Fila[];
-          acumulado.push(...nuevas);
-
-          // Mostrar al usuario lo que tenemos hasta ahora
-          setFilas([...acumulado]);
-          setCargadas(acumulado.length);
-
-          if (json.completo || nuevas.length === 0) break;
-          desde += LOTE;
-
-          // Tope de seguridad
-          if (acumulado.length >= 100000) break;
-        } catch (e: any) {
-          if (!cancelado) setErrorCarga(e.message || "Error de red");
-          break;
-        }
-      }
-
-      if (!cancelado) {
-        setCargando(false);
-        // Guardar en cache
-        try {
-          sessionStorage.setItem(
-            cacheKey,
-            JSON.stringify({ filas: acumulado, timestamp: Date.now() })
-          );
-        } catch {
-          // Cache lleno, no es crítico
-        }
-      }
-    }
-
-    cargar();
-    return () => {
-      cancelado = true;
-    };
-  }, [hoja.id, hoja.snapshot_version]);
-
-  // === ESTADO DE FILTROS Y UI ===
   const [filtroGlobal, setFiltroGlobal] = useState("");
   const [filtrosActivos, setFiltrosActivos] = useState<{ col: string; val: string }[]>([]);
   const [ordenCol, setOrdenCol] = useState<string | null>(null);
@@ -152,10 +60,10 @@ export default function TablaHoja({
   const [mostrarSelector, setMostrarSelector] = useState(false);
   const [popoverCol, setPopoverCol] = useState<string | null>(null);
 
-  // === VIRTUALIZACIÓN ===
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
+  const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     function onResize() {
@@ -166,14 +74,96 @@ export default function TablaHoja({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // === ANCHOS DE COLUMNA (calculados una vez cuando llegan suficientes filas) ===
-  const anchosCol = useMemo(() => {
-    const mapa: Record<string, number> = {};
-    for (const c of columnas) {
-      mapa[c] = calcularAnchoColumna(c, filas);
+  // === CARGA DESDE SERVIDOR ===
+  const cargarFilas = useCallback(async () => {
+    setCargando(true);
+    setErrorCarga(null);
+    try {
+      const res = await fetch(`/api/hojas/${hoja.id}/filas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          desde: 0,
+          tamano: TAMANO_PAGINA,
+          filtros: filtrosActivos,
+          filtroGlobal,
+          ordenCol,
+          ordenDir,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Error desconocido" }));
+        setErrorCarga(err.error || `Error ${res.status}`);
+        setCargando(false);
+        return;
+      }
+      const json = await res.json();
+      setFilas(json.filas ?? []);
+      setColumnasVisibles(json.columnasVisibles ?? hoja.columnas);
+      setTotalFiltrado(json.total ?? 0);
+      setRequireFiltro(json.requireFiltro === true);
+    } catch (e: any) {
+      setErrorCarga(e.message || "Error de red");
+    } finally {
+      setCargando(false);
     }
-    return mapa;
-  }, [columnas, filas.length > 0 ? filas[0]?.id : null]); // solo recalcula cuando hay datos
+  }, [hoja.id, hoja.columnas, filtrosActivos, filtroGlobal, ordenCol, ordenDir]);
+
+  // Cargar al cambiar filtros (con debounce)
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      cargarFilas();
+    }, 350);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [cargarFilas]);
+
+  // Cargar más al hacer scroll cerca del final (pagination)
+  const cargarMas = useCallback(async () => {
+    if (cargando) return;
+    if (filas.length >= totalFiltrado) return;
+    setCargando(true);
+    try {
+      const res = await fetch(`/api/hojas/${hoja.id}/filas`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          desde: filas.length,
+          tamano: TAMANO_PAGINA,
+          filtros: filtrosActivos,
+          filtroGlobal,
+          ordenCol,
+          ordenDir,
+        }),
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      setFilas((prev) => [...prev, ...(json.filas ?? [])]);
+    } catch {
+      // silencioso, ya se mostrarán los que se tengan
+    } finally {
+      setCargando(false);
+    }
+  }, [cargando, filas.length, totalFiltrado, hoja.id, filtrosActivos, filtroGlobal, ordenCol, ordenDir]);
+
+  // Detección de scroll para cargar más
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function onScroll() {
+      const target = el!;
+      setScrollTop(target.scrollTop);
+      // Cuando estamos cerca del final, cargar siguiente página
+      const cerca = target.scrollHeight - target.scrollTop - target.clientHeight < 400;
+      if (cerca && filas.length < totalFiltrado && !cargando) {
+        cargarMas();
+      }
+    }
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [filas.length, totalFiltrado, cargando, cargarMas]);
 
   // === SELECCIONES POR HASH ===
   const mapaSelecPorHash = useMemo(() => {
@@ -186,35 +176,23 @@ export default function TablaHoja({
     return m;
   }, [selecciones]);
 
-  // === FILTRADO ===
-  const filasFiltradas = useMemo(() => {
-    let res = filas.filter((f) => {
-      if (!aplicaFiltroGlobal(filtroGlobal, f.datos)) return false;
-      for (const { col, val } of filtrosActivos) {
-        if (!val) continue;
-        if (!aplicaFiltroColumna(val, f.datos[col])) return false;
-      }
-      return true;
-    });
-    if (ordenCol) {
-      const dir = ordenDir === "asc" ? 1 : -1;
-      res = [...res].sort((a, b) => {
-        const va = a.datos[ordenCol];
-        const vb = b.datos[ordenCol];
-        if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
-        return String(va ?? "").localeCompare(String(vb ?? ""), "es", { numeric: true }) * dir;
-      });
+  // === ANCHOS DE COLUMNA ===
+  const anchosCol = useMemo(() => {
+    const mapa: Record<string, number> = {};
+    for (const c of columnasVisibles) {
+      mapa[c] = calcularAnchoColumna(c, filas);
     }
-    return res;
-  }, [filas, filtroGlobal, filtrosActivos, ordenCol, ordenDir]);
+    return mapa;
+  }, [columnasVisibles, filas.length > 0 ? filas[0]?.id : null]);
 
-  const totalH = filasFiltradas.length * FILA_ALTURA;
+  // === VIRTUALIZACIÓN ===
+  const totalH = filas.length * FILA_ALTURA;
   const startIdx = Math.max(0, Math.floor(scrollTop / FILA_ALTURA) - OVERSCAN);
   const endIdx = Math.min(
-    filasFiltradas.length,
+    filas.length,
     Math.ceil((scrollTop + viewportH) / FILA_ALTURA) + OVERSCAN
   );
-  const filasVisibles = filasFiltradas.slice(startIdx, endIdx);
+  const filasVisibles = filas.slice(startIdx, endIdx);
   const offsetY = startIdx * FILA_ALTURA;
 
   function agregarFiltro(col: string) {
@@ -251,8 +229,12 @@ export default function TablaHoja({
 
   function exportarExcel() {
     import("xlsx").then((XLSX) => {
-      const datos = filasFiltradas.map((f) => f.datos);
-      const ws = XLSX.utils.json_to_sheet(datos, { header: columnas });
+      const datos = filas.map((f) => {
+        const out: Record<string, unknown> = {};
+        for (const c of columnasVisibles) out[c] = f.datos[c];
+        return out;
+      });
+      const ws = XLSX.utils.json_to_sheet(datos, { header: columnasVisibles });
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, hoja.nombre.slice(0, 31));
       XLSX.writeFile(wb, `${hoja.nombre}_filtrado.xlsx`);
@@ -279,10 +261,6 @@ export default function TablaHoja({
         setMensaje(`${rows.length} fila(s) confirmadas.`);
         setSeleccionadas(new Set());
         setComentario("");
-        // Invalidar cache para que se vea actualizado
-        try {
-          sessionStorage.removeItem(`hoja_${hoja.id}_v${hoja.snapshot_version}`);
-        } catch {}
         setTimeout(() => location.reload(), 1200);
       }
     });
@@ -293,15 +271,16 @@ export default function TablaHoja({
     miRol &&
     ["admin", "analista", "crs", "ejecutivo"].includes(miRol);
 
-  const columnasDisponibles = columnas.filter(
+  const esAdmin = miRol === "admin";
+
+  const columnasDisponibles = columnasVisibles.filter(
     (c) => !filtrosActivos.some((f) => f.col === c)
   );
 
-  // Calcula ancho total para que la tabla mantenga estructura
   const anchoTotal =
     (puedeSeleccionar ? ANCHO_CHECKBOX : 0) +
     ANCHO_ESTADO +
-    columnas.reduce((s, c) => s + (anchosCol[c] ?? ANCHO_MIN), 0);
+    columnasVisibles.reduce((s, c) => s + (anchosCol[c] ?? ANCHO_MIN), 0);
 
   return (
     <div>
@@ -310,37 +289,45 @@ export default function TablaHoja({
           <Link href="/app" className="muted text-xs hover:underline">← Hojas</Link>
           <h1 className="text-lg font-semibold mt-1">{hoja.nombre}</h1>
           <p className="muted text-xs mt-1">
-            {cargando ? (
-              <>
-                Cargando {cargadas.toLocaleString()} de {totalFilas.toLocaleString()}…
-              </>
+            {requireFiltro ? (
+              <>Modo: buscar para ver · {totalFilas.toLocaleString()} filas totales</>
             ) : (
               <>
-                {filasFiltradas.length.toLocaleString()} de {filas.length.toLocaleString()} filas · v{hoja.snapshot_version}
+                {totalFiltrado.toLocaleString()} resultados ({filas.length.toLocaleString()} cargadas)
+                {" · "}v{hoja.snapshot_version}
               </>
             )}
           </p>
         </div>
         <div className="flex gap-2 items-center">
-          <button onClick={exportarExcel} className="btn text-xs" disabled={filasFiltradas.length === 0}>
-            Exportar filtrado
+          {esAdmin && (
+            <Link href={`/app/hojas/${hoja.id}/configurar`} className="btn text-xs">
+              Configurar
+            </Link>
+          )}
+          <button
+            onClick={exportarExcel}
+            className="btn text-xs"
+            disabled={filas.length === 0}
+          >
+            Exportar
           </button>
           {puedeSeleccionar && seleccionadas.size > 0 && (
             <>
               <input
                 type="text"
-                placeholder="Comentario (opcional)"
+                placeholder="Comentario"
                 value={comentario}
                 onChange={(e) => setComentario(e.target.value)}
                 className="text-xs"
-                style={{ width: 180 }}
+                style={{ width: 160 }}
               />
               <button
                 onClick={confirmarSeleccion}
                 disabled={enviando}
                 className="btn btn-primary text-xs"
               >
-                {enviando ? "Enviando…" : `Confirmar (${seleccionadas.size})`}
+                {enviando ? "…" : `Confirmar (${seleccionadas.size})`}
               </button>
             </>
           )}
@@ -349,7 +336,7 @@ export default function TablaHoja({
 
       {errorCarga && (
         <div className="mb-3 text-xs px-3 py-2 bg-red-50 border border-red-200 text-red-700 rounded">
-          Error al cargar filas: {errorCarga}
+          {errorCarga}
         </div>
       )}
       {mensaje && (
@@ -417,7 +404,7 @@ export default function TablaHoja({
                   onClick={() => setPopoverCol(popoverCol === col ? null : col)}
                   className="btn btn-ghost text-xs"
                   style={{ padding: "4px 6px", lineHeight: 1 }}
-                  title="Ver valores únicos"
+                  title="Ver valores únicos (muestra)"
                 >
                   ▾
                 </button>
@@ -451,7 +438,7 @@ export default function TablaHoja({
                   </button>
                 ))}
                 {columnasDisponibles.length === 0 && (
-                  <p className="text-[11px] muted italic px-2">Todas las columnas ya están filtradas.</p>
+                  <p className="text-[11px] muted italic px-2">No hay columnas para agregar.</p>
                 )}
               </div>
               <button
@@ -485,19 +472,30 @@ export default function TablaHoja({
         {/* TABLA */}
         <div
           ref={scrollRef}
-          onScroll={(e) => setScrollTop((e.target as HTMLDivElement).scrollTop)}
           className="card overflow-auto relative"
           style={{ height: "calc(100vh - 200px)" }}
         >
-          {filas.length === 0 && cargando && (
-            <div className="p-8 text-center muted text-xs">
-              Cargando primer lote de datos…
+          {requireFiltro && filas.length === 0 && !cargando && (
+            <div className="p-12 text-center">
+              <p className="text-base font-medium mb-1">Aplica un filtro para ver datos</p>
+              <p className="muted text-xs">
+                Esta hoja tiene {totalFilas.toLocaleString()} filas. Usa el panel de la izquierda para filtrar lo que necesitas.
+              </p>
             </div>
+          )}
+
+          {!requireFiltro && filas.length === 0 && !cargando && totalFiltrado === 0 && (
+            <div className="p-12 text-center muted text-xs">
+              {filtrosActivos.length > 0 || filtroGlobal ? "Ningún resultado con los filtros actuales." : "Sin datos en esta hoja."}
+            </div>
+          )}
+
+          {cargando && filas.length === 0 && (
+            <div className="p-12 text-center muted text-xs">Cargando…</div>
           )}
 
           {filas.length > 0 && (
             <div style={{ width: anchoTotal, position: "relative" }}>
-              {/* HEADER STICKY */}
               <div
                 style={{
                   position: "sticky",
@@ -524,11 +522,10 @@ export default function TablaHoja({
                     <input
                       type="checkbox"
                       checked={
-                        filasFiltradas.length > 0 &&
-                        filasFiltradas.every((f) => seleccionadas.has(f.id))
+                        filas.length > 0 && filas.every((f) => seleccionadas.has(f.id))
                       }
                       onChange={(e) => {
-                        if (e.target.checked) setSeleccionadas(new Set(filasFiltradas.map((f) => f.id)));
+                        if (e.target.checked) setSeleccionadas(new Set(filas.map((f) => f.id)));
                         else setSeleccionadas(new Set());
                       }}
                     />
@@ -546,7 +543,7 @@ export default function TablaHoja({
                 >
                   Estado
                 </div>
-                {columnas.map((c) => (
+                {columnasVisibles.map((c) => (
                   <div
                     key={c}
                     onClick={() => toggleOrden(c)}
@@ -570,7 +567,6 @@ export default function TablaHoja({
                 ))}
               </div>
 
-              {/* CUERPO virtualizado */}
               <div style={{ height: totalH, position: "relative" }}>
                 <div style={{ position: "absolute", top: offsetY, left: 0, width: anchoTotal }}>
                   {filasVisibles.map((f) => {
@@ -642,7 +638,7 @@ export default function TablaHoja({
                             <span className="muted">disponible</span>
                           )}
                         </div>
-                        {columnas.map((c) => (
+                        {columnasVisibles.map((c) => (
                           <div
                             key={c}
                             style={{
@@ -664,6 +660,12 @@ export default function TablaHoja({
                   })}
                 </div>
               </div>
+
+              {cargando && filas.length > 0 && (
+                <div className="text-center text-xs muted py-2 sticky bottom-0 bg-[rgb(var(--bg))]">
+                  Cargando más…
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -672,7 +674,7 @@ export default function TablaHoja({
   );
 }
 
-/** Dropdown estilo Excel con valores únicos */
+/** Popover de valores únicos (muestra de las filas cargadas) */
 function PopoverValores({
   filas,
   columna,
@@ -687,10 +689,29 @@ function PopoverValores({
   onCerrar: () => void;
 }) {
   const [busqueda, setBusqueda] = useState("");
-  const valores = useMemo(
-    () => valoresUnicosColumna(filas, columna, 1000),
-    [filas, columna]
-  );
+  const valores = useMemo(() => {
+    const conteos = new Map<string, number>();
+    let vacios = 0;
+    for (const f of filas) {
+      const v = f.datos[columna];
+      if (v === null || v === undefined || String(v).trim() === "") {
+        vacios++;
+        continue;
+      }
+      const k = String(v);
+      conteos.set(k, (conteos.get(k) ?? 0) + 1);
+    }
+    const arr: { valor: string; etiqueta: string; conteo: number; esVacio: boolean }[] = [];
+    if (vacios > 0) arr.push({ valor: "(vacio)", etiqueta: "(vacíos)", conteo: vacios, esVacio: true });
+    for (const [k, c] of conteos) arr.push({ valor: k, etiqueta: k, conteo: c, esVacio: false });
+    arr.sort((a, b) => {
+      if (a.esVacio && !b.esVacio) return -1;
+      if (!a.esVacio && b.esVacio) return 1;
+      return a.valor.localeCompare(b.valor, "es", { numeric: true });
+    });
+    return arr.slice(0, 1000);
+  }, [filas, columna]);
+
   const valoresFiltrados = useMemo(() => {
     if (!busqueda.trim()) return valores;
     const q = busqueda.toLowerCase();
@@ -745,6 +766,7 @@ function PopoverValores({
       onClick={(e) => e.stopPropagation()}
     >
       <div className="p-2 border-b border-[rgb(var(--border))]">
+        <p className="text-[10px] muted mb-1">Valores únicos en los resultados actuales:</p>
         <input
           type="text"
           placeholder="Buscar…"
