@@ -92,8 +92,17 @@ export default function TablaHoja({
         }),
       });
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Error desconocido" }));
-        setErrorCarga(err.error || `Error ${res.status}`);
+        let errMsg = `Error ${res.status}`;
+        try {
+          const err = await res.json();
+          errMsg = err.error || err.message || errMsg;
+        } catch {
+          try {
+            const text = await res.text();
+            if (text) errMsg = `${errMsg}: ${text.slice(0, 200)}`;
+          } catch {}
+        }
+        setErrorCarga(errMsg);
         setCargando(false);
         return;
       }
