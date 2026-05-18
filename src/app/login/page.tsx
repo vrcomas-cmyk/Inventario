@@ -22,16 +22,30 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <div className="card p-8 w-full max-w-sm">
-        <h1 className="text-xl font-semibold mb-2">Inventarios</h1>
-        <p className="muted text-sm mb-6">
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+    >
+      <div className="card" style={{ padding: 32, width: "100%", maxWidth: 360 }}>
+        <img
+          src="/assets/logo-degasa.png"
+          alt="Degasa"
+          style={{ height: 36, width: "auto", marginBottom: 18 }}
+        />
+        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 6 }}>Inventarios</h1>
+        <p className="muted" style={{ fontSize: 13, marginBottom: 24 }}>
           Accede con tu cuenta de Google para ver y gestionar inventarios.
         </p>
         <button
           onClick={loginGoogle}
           disabled={cargando}
-          className="btn btn-primary w-full justify-center"
+          className="btn btn-primary"
+          style={{ width: "100%", justifyContent: "center" }}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
             <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
@@ -41,7 +55,11 @@ export default function LoginPage() {
           </svg>
           {cargando ? "Conectando…" : "Continuar con Google"}
         </button>
-        {error && <p className="text-red-600 text-xs mt-3">{error}</p>}
+        {error && (
+          <p style={{ color: "rgb(var(--danger))", fontSize: 12, marginTop: 12 }}>
+            {error}
+          </p>
+        )}
       </div>
     </div>
   );

@@ -2,38 +2,161 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   Degasa Design System — Foundations
+   Brand: bright leaf-green + warm tan/brown over warm neutrals.
+   ============================================================ */
+
+@font-face {
+  font-family: "Cocomat";
+  src: url("/fonts/Cocomat_Ultralight.ttf") format("truetype");
+  font-weight: 200;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Cocomat";
+  src: url("/fonts/Cocomat_Light.ttf") format("truetype");
+  font-weight: 300;
+  font-style: normal;
+  font-display: swap;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
 :root {
-  --bg: 255 255 255;
-  --bg-alt: 247 246 242;
-  --fg: 30 30 28;
-  --fg-muted: 113 112 108;
-  --border: 218 217 211;
-  --accent: 30 99 195;
-  --accent-fg: 255 255 255;
+  /* Brand Degasa */
+  --brand-green:        139 197 63;    /* #8BC53F — primary, logo wordmark */
+  --brand-green-700:    111 163 45;    /* #6FA32D — hover */
+  --brand-green-300:    199 226 152;   /* #C7E298 — soft fill */
+  --brand-green-50:     241 248 226;   /* #F1F8E2 — tint */
+
+  --brand-tan:          167 127 56;    /* #A77F38 — secondary, figure mark */
+  --brand-tan-700:      132 99 37;     /* #846325 */
+  --brand-tan-300:      213 185 136;
+  --brand-tan-50:       246 239 224;
+
+  /* Neutrales cálidos (formato RGB para compatibilidad con Tailwind <alpha>) */
+  --bg:                 255 255 255;
+  --bg-alt:             247 246 242;   /* #F7F6F2 */
+  --bg-sunken:          239 237 229;   /* #EFEDE5 */
+  --fg:                 30 30 28;      /* #1E1E1C */
+  --fg-muted:           113 112 108;   /* #71706C */
+  --fg-faint:           173 172 166;   /* #ADACA6 */
+  --border:             218 217 211;   /* #DAD9D3 */
+  --border-strong:      191 189 181;   /* #BFBDB5 */
+
+  /* Accent = Degasa green (reemplaza el azul anterior) */
+  --accent:             139 197 63;
+  --accent-hover:       111 163 45;
+  --accent-fg:          255 255 255;
+
+  /* Status semánticos */
+  --ok:                 34 197 94;
+  --warn:               245 158 11;
+  --info:               59 130 246;
+  --danger:             220 38 38;
+
+  /* Type scale */
+  --fs-display:         28px;
+  --fs-h1:              20px;
+  --fs-h2:              16px;
+  --fs-h3:              14px;
+  --fs-body:            14px;
+  --fs-sm:              13px;
+  --fs-xs:              12px;
+  --fs-2xs:             11px;
+  --fs-3xs:             10px;
+
+  --font-display: "Cocomat", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans:    "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* Radii */
+  --radius-sm:          6px;
+  --radius-md:          10px;
+  --radius-lg:          14px;
+  --radius-xl:          20px;
+
+  /* Background tint sutil con verde + tan en las esquinas */
+  --bg-tint: radial-gradient(1200px 500px at 88% -8%, rgba(139,197,63,0.08), transparent 60%),
+             radial-gradient(900px 480px at -12% 108%, rgba(167,127,56,0.06), transparent 60%),
+             rgb(247 246 242);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: 24 24 22;
-    --bg-alt: 36 36 33;
-    --fg: 232 231 226;
-    --fg-muted: 154 153 148;
-    --border: 60 59 55;
-    --accent: 121 174 240;
-    --accent-fg: 24 24 22;
+    --bg:               24 24 22;
+    --bg-alt:           36 36 33;
+    --bg-sunken:        47 47 44;
+    --fg:               232 231 226;
+    --fg-muted:         154 153 148;
+    --fg-faint:         107 106 101;
+    --border:           60 59 55;
+    --border-strong:    85 81 73;
+    --accent:           168 216 102;
+    --accent-fg:        24 24 22;
+    --bg-tint: radial-gradient(1200px 500px at 88% -8%, rgba(168,216,102,0.06), transparent 60%),
+               radial-gradient(900px 480px at -12% 108%, rgba(167,127,56,0.05), transparent 60%),
+               rgb(36 36 33);
   }
 }
 
+* { box-sizing: border-box; }
+
 html, body {
-  background: rgb(var(--bg));
+  background: var(--bg-tint);
   color: rgb(var(--fg));
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Anthropic Sans",
-    Roboto, Oxygen, Ubuntu, sans-serif;
-  font-size: 14px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-* { box-sizing: border-box; }
+/* Headings Cocomat (display) */
+h1 {
+  font-family: var(--font-display);
+  font-size: var(--fs-h1);
+  font-weight: 300;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+h2 {
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+  font-weight: 300;
+  letter-spacing: -0.005em;
+  line-height: 1.35;
+}
+h3 {
+  font-size: var(--fs-h3);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.display {
+  font-family: var(--font-display);
+  font-size: var(--fs-display);
+  font-weight: 200;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.eyebrow {
+  font-size: var(--fs-3xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgb(var(--fg-muted));
+  font-weight: 500;
+}
+
+.muted { color: rgb(var(--fg-muted)); }
+.faint { color: rgb(var(--fg-faint)); }
+
+code, .mono {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
 
 button { cursor: pointer; }
 
@@ -41,49 +164,74 @@ input, select, textarea {
   background: rgb(var(--bg));
   color: rgb(var(--fg));
   border: 1px solid rgb(var(--border));
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
+  font-family: inherit;
   outline: none;
-  transition: border-color 0.15s;
+  transition: border-color 0.12s, box-shadow 0.12s;
 }
 input:focus, select:focus, textarea:focus {
   border-color: rgb(var(--accent));
+  box-shadow: 0 0 0 3px rgba(139, 197, 63, 0.18);
 }
 
+/* Buttons */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   padding: 7px 14px;
-  font-size: 13px;
+  font-size: var(--fs-sm);
   font-weight: 500;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   border: 1px solid rgb(var(--border));
   background: rgb(var(--bg));
   color: rgb(var(--fg));
-  transition: all 0.15s;
+  transition: background 0.12s, border-color 0.12s, filter 0.12s;
   white-space: nowrap;
 }
-.btn:hover { background: rgb(var(--bg-alt)); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:hover   { background: rgb(var(--bg-alt)); }
+.btn:active  { background: rgb(var(--bg-sunken)); }
+.btn:disabled{ opacity: 0.5; cursor: not-allowed; }
+
 .btn-primary {
   background: rgb(var(--accent));
   color: rgb(var(--accent-fg));
   border-color: rgb(var(--accent));
 }
-.btn-primary:hover {
-  background: rgb(var(--accent));
-  filter: brightness(0.92);
-}
-.btn-ghost { border-color: transparent; }
+.btn-primary:hover  { filter: brightness(0.94); background: rgb(var(--accent)); }
+.btn-primary:active { filter: brightness(0.88); }
+
+.btn-ghost  { border-color: transparent; background: transparent; }
 .btn-ghost:hover { background: rgb(var(--bg-alt)); }
 
+.btn-danger { color: rgb(var(--danger)); border-color: rgb(var(--border)); background: rgb(var(--bg)); }
+.btn-danger:hover { background: rgba(220, 38, 38, 0.08); border-color: #FECACA; }
+
+/* Cards */
 .card {
   background: rgb(var(--bg));
   border: 1px solid rgb(var(--border));
-  border-radius: 10px;
+  border-radius: var(--radius-md);
 }
+.card-sunken { background: rgb(var(--bg-alt)); }
 
-.muted { color: rgb(var(--fg-muted)); }
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: var(--fs-3xs);
+  border-radius: 999px;
+  border: 1px solid rgb(var(--border));
+  background: rgb(var(--bg-alt));
+  color: rgb(var(--fg-muted));
+  font-weight: 500;
+}
+.badge-ok   { background: rgb(var(--brand-green-50)); color: rgb(var(--brand-green-700)); border-color: rgb(var(--brand-green-300)); }
+.badge-warn { background: #FEF5E6; color: #92660F; border-color: #F6D89A; }
+.badge-info { background: #EAF1FC; color: #1747AE; border-color: #B8CFEF; }
+.badge-tan  { background: rgb(var(--brand-tan-50)); color: rgb(var(--brand-tan-700)); border-color: rgb(var(--brand-tan-300)); }
